@@ -81,11 +81,25 @@ func main() {
 			}).Execute()
 			return err
 		})
+		e.Router.POST("/remove/:user/:guild/:role", func(c echo.Context) error {
+			userId := c.PathParam("user")
+			guildId := c.PathParam("guild")
+			roleId := c.PathParam("role")
+			err := deleteMemberFromDatabase(userId, guildId, roleId, e.App.Dao().DB())
+			if err != nil {
+				return c.JSON(http.StatusExpectationFailed, map[string]string{"message": err.Error()})
+			}
+			return discord.GuildMemberRoleRemove(guildId, userId, roleId)
+		})
 		e.Router.POST("/add/:user/:guild/:role", func(c echo.Context) error {
 			userId := c.PathParam("user")
 			guildId := c.PathParam("guild")
 			roleId := c.PathParam("role")
-			err := addMemberToDatabase(userId, guildId, roleId, e.App.Dao().DB())
+			_, err := e.App.Dao().DB().NewQuery("select * from protected_roles where roleId = {:roleId} and isProtected = true").Bind(dbx.Params{"roleId": roleId}).Execute()
+			if err != nil {
+				return c.JSON(http.StatusExpectationFailed, map[string]string{"message": err.Error()})
+			}
+			err = addMemberToDatabase(userId, guildId, roleId, e.App.Dao().DB())
 			if err != nil {
 				return err
 			}
@@ -168,14 +182,14 @@ func startBot(db dbx.Builder) {
 	discord.AddHandler(func(session *discordgo.Session, gc *discordgo.GuildDelete) {
 		guild := gc.Guild
 		for _, member := range guild.Members {
-			deleteMemberFromDatabase(member, db)
+			_ = deleteMemberFromDatabase(member.User.ID, guild.ID, "", db)
 		}
 		for _, role := range guild.Roles {
 			deleteRoleFromDatabase(role.ID, db)
 		}
 	})
 	discord.AddHandler(func(session *discordgo.Session, gmr *discordgo.GuildMemberRemove) {
-		deleteMemberFromDatabase(gmr.Member, db)
+		_ = deleteMemberFromDatabase(gmr.Member.User.ID, gmr.GuildID, "", db)
 	})
 	discord.AddHandler(func(session *discordgo.Session, grc *discordgo.GuildRoleCreate) {
 		addRoleToDatabase(grc.Role, grc.GuildID, db)
@@ -250,17 +264,23 @@ func deleteRoleFromDatabase(roleId string, db dbx.Builder) {
 	}
 }
 
-func deleteMemberFromDatabase(member *discordgo.Member, db dbx.Builder) {
-	if member.User.Bot {
-		fmt.Printf("%s is bot, skipping...\n", member.User.Username)
-		return
+func deleteMemberFromDatabase(member, guild, role string, db dbx.Builder) error {
+	fmt.Printf("Deleting %s of guild ID: %s, from database\n", member, guild)
+	if role == "" {
+		_, err := db.NewQuery("delete from users where userId = {:userId} and guildId = {:guildId};").Bind(dbx.Params{
+			"userId":  member,
+			"guildId": guild,
+		}).Execute()
+		if err != nil {
+			return err
+		}
 	}
-	fmt.Printf("Deleting %s of guild ID: %s, from database\n", member.User.Username, member.GuildID)
-	_, err := db.NewQuery("delete from users where userId = {:userId} and guildId = {:guildId};").Bind(dbx.Params{
-		"userId":  member.User.ID,
-		"guildId": member.GuildID,
+	_, err := db.NewQuery("delete from users where userId = {:userId} and guildId = {:guildId} and roleId = {:roleId};").Bind(dbx.Params{
+		"userId":  member,
+		"guildId": guild,
+		"roleId":  role,
 	}).Execute()
 	if err != nil {
-		fmt.Println(err.Error())
+		return err
 	}
 }
